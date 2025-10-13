@@ -1,8 +1,7 @@
 # WebSearchEngines-HW2
 
 ## TODOS
-- comment code
-- run the time benchmarks
+- comments for final code once decided
 - use llm to return snippets of 10 results - return a vector of up to 10 results and print the doc id with the snippets that are query dependent
 - browser-accessible interface
 - might be a bug when u have multiple terms in conjunctive - still figuring it out (e.g. terms "archie moore bash ali" return none when 4509151 has all those terms)
