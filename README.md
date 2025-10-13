@@ -11,7 +11,7 @@
 - BM25-Ranked Web Search Engine
 
 ## Files & What they Do
-1) parsing.cpp (ran for 669708 ms or 11.2 minutes)
+### 1) parsing.cpp (ran for 669708 ms or 11.2 minutes)
 - input: MS MARCO dataset
 - parses through MS MARCO dataset (input), cleans the input from non-ascii, separating characters (e.g. ; , () --)
 - generats intermediate postings of (term, docId, freq)
@@ -24,7 +24,7 @@
         - ...
         - "temp255.bin"
 
-2) merging.cpp (ran for 1064688 ms or 17.7 minutes)
+### 2) merging.cpp (ran for 1064688 ms or 17.7 minutes)
 - input: 256 sorted binary temp files
 - merges the 256 input files into 16 binary temp files then into 1 large sorted binary index file uncompressed
 - uses heap merge sort / unix sort
@@ -38,7 +38,7 @@
     - 1 temp file (merged from 16)
         - "final_merged.bin"
 
-3) index.cpp (ran for 122097 ms or 2 minutes)
+### 3) index.cpp (ran for 122097 ms or 2 minutes)
 - input: sorted uncompressed index file ("final_merged.bin")
 - iterates through each record, then:
     - if the term is the same, consolidate them into blocks/chunks of size 128
@@ -60,7 +60,7 @@
     - metadata ("metadata.bin")
     - compressed inverted index ("compressed_inverted_index.bin")
 
-4) query.cpp 
+### 4) query.cpp 
 - runtime:
     - for conjunctive on "tinting" and "eyebrow" -> 1653 ms
     - for disjunctive on "difference", "painting", and "dry" -> 2113 ms
@@ -75,3 +75,8 @@
 - Implements conjunctive and disjunctive DAAT (maxscore) using top k min heap
 - Loads lexicon, page table, and metadata into main memory
 - Prefix sums the block offsets at the start
+- cli arguments:
+    - set "c" or "d" for conjunctive or disjunctive
+    - space-separated terms
+- outputs:
+    - top 10 docIDs for the query
