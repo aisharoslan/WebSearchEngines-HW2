@@ -105,9 +105,13 @@ void compressBlock(ofstream &ofs, const Block &block, vector<unsigned char> &buf
 {
     buffer.clear();
     // compress and write docIds
+    // use delta then varbyte !!
+    int prevDocId = 0;
     for (int docId : block.docIds)
     {
-        varbyteEncode(buffer, static_cast<uint32_t>(docId));
+        uint32_t delta = docId - prevDocId;
+        varbyteEncode(buffer, delta);
+        prevDocId = docId;
     }
     // write to output buffer
     ofs.write(reinterpret_cast<char *>(buffer.data()), buffer.size());

@@ -38,7 +38,7 @@
     - 1 temp file (merged from 16)
         - "final_merged.bin"
 
-### 3) index.cpp (ran for 122097 ms or 2 minutes)
+### 3) index.cpp (ran for 106553 ms or 1.77 minutes)
 - input: sorted uncompressed index file ("final_merged.bin")
 - iterates through each record, then:
     - if the term is the same, consolidate them into blocks/chunks of size 128

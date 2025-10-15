@@ -51,7 +51,7 @@ struct MinHeapComp
 class ListPointer
 {
 public:
-    ListPointer(const string &term, const LexiconEntry &lexicon) : term(term), listLength(lexicon.listLength), blockNum(lexicon.startBlock)
+    ListPointer(const string &term, const LexiconEntry &lexicon) : term(term), listLength(lexicon.listLength), blockNum(lexicon.startBlock), startBlock(lexicon.startBlock), startIndex(lexicon.startIndex)
     {
         uint32_t postingsLeft = (lexicon.listLength > (128 - lexicon.startIndex)) ? (lexicon.listLength - (128 - lexicon.startIndex)) : 0;
         finalBlock = lexicon.startBlock + (postingsLeft + 127) / 128;
@@ -60,6 +60,11 @@ public:
     // load 1 block of docIDs and freqs into ListPointer buffers
     void loadBlock(ifstream &ifs, const vector<BlockMetadata> &metadata, const vector<uint64_t> &blockOffsets)
     {
+        if (blockNum >= metadata.size())
+        {
+            return;
+        }
+
         // seek and read compressed bytes from compressed inverted index at offset into buffer
         ifs.seekg(blockOffsets[blockNum], ios::beg);
 
@@ -72,38 +77,46 @@ public:
         uint32_t freqSize = metadata[blockNum].freqSize;
         freqBuffer.resize(freqSize);
         ifs.read(reinterpret_cast<char *>(freqBuffer.data()), freqSize);
+
+        docBufPos = 0;
+        freqBufPos = 0;
+        prevDocId = 0; // reset delta base when new block starts
+
+        // skip docIDs before startIndex
+        if (blockNum == startBlock && startIndex > 0)
+        {
+            for (uint32_t i = 0; i < startIndex; ++i)
+            {
+                uint32_t gap = varbyteDecode(docBuffer, docBufPos);
+                prevDocId += gap;
+                varbyteDecode(freqBuffer, freqBufPos);
+            }
+        }
+
+        currentPos = 0;
     }
 
-    // find next doc in postings list that is >= targetDoc
     uint32_t nextGEQ(uint32_t targetDoc, ifstream &ifs, const vector<BlockMetadata> &metadata, const vector<uint64_t> &blockOffsets)
     {
-        // use galloping
-        // scan current block's decoded docIDs until find doc >= target
-        // if lastDocId < target, jump over
-        // decompress to get posting
-        while (currentPos < listLength) // makes sure u don't bleed into next term's postings
+        if (currentPos >= listLength)
+        { // exhausted this term's postings
+            return UINT32_MAX;
+        }
+
+        // linear decoding one by one
+        while (true)
         {
-            if (blockNum > finalBlock)
+            if (docBufPos >= docBuffer.size()) // need new block
             {
-                return UINT32_MAX;
+                if (++blockNum > finalBlock || blockNum >= metadata.size())
+                    return UINT32_MAX;
+                loadBlock(ifs, metadata, blockOffsets);
             }
 
-            if (metadata[blockNum].lastDocId < targetDoc)
-            {
-                // if doc < targetDoc, gallop to block whose lastDocID <= targetDoc and load it into lp
-                uint32_t nextBlock = gallopToBlock(targetDoc, metadata);
-                if (nextBlock > blockNum)
-                {
-                    blockNum = nextBlock;
-                    loadBlock(ifs, metadata, blockOffsets);
-                    docBufPos = 0;
-                    freqBufPos = 0;
-                    // limitation -> update lp.currentPos after skipping is complex
-                }
-            }
+            uint32_t gap = varbyteDecode(docBuffer, docBufPos);
+            uint32_t doc = prevDocId + gap;
+            prevDocId = doc;
 
-            // decode next docId from current block
-            uint32_t doc = varbyteDecode(docBuffer, docBufPos);
             uint32_t freq = varbyteDecode(freqBuffer, freqBufPos);
 
             ++currentPos;
@@ -111,12 +124,8 @@ public:
             currentFreq = freq;
 
             if (doc >= targetDoc)
-            {
                 return doc;
-            }
         }
-
-        return UINT32_MAX; // return MAXDID if not found
     }
 
     double getScore(double docLength, double averageDocLength)
@@ -172,35 +181,61 @@ private:
     }
 
     // galloping - if many blocks ahead have lastDocId < target, skip exponentially
-    uint32_t gallopToBlock(uint32_t targetDoc, const vector<BlockMetadata> &metadata)
+    // find block by block
+    // uint32_t gallopBlock(uint32_t targetDoc, const vector<BlockMetadata> &metadata)
+    // {
+
+    // // if curr block's lastDocId >= target, return start Block
+    // // if first block to search has lastDocId that already exceeds target, means that target is somewhere in that block
+    // if (metadata[blockNum].lastDocId >= targetDoc)
+    // {
+    //     return blockNum;
+    // }
+
+    // uint32_t skip = 1;
+    // uint32_t newBlock = blockNum;
+    // // exponential skip if valid and lastDocId < targetDoc
+    // while ((newBlock + skip <= finalBlock) && (metadata[newBlock + skip].lastDocId < targetDoc))
+    // {
+    //     newBlock += skip;
+    //     skip <<= 1; // double the skips
+    // }
+
+    // // reduce skips if went over
+    // skip >>= 1;
+    // while (skip > 0)
+    // {
+    //     if ((newBlock + skip <= finalBlock) && (metadata[newBlock + skip].lastDocId < targetDoc))
+    //     {
+    //         newBlock += skip;
+    //     }
+    //     skip >>= 1;
+    // }
+
+    // if (newBlock < finalBlock && metadata[newBlock].lastDocId < targetDoc)
+    // {
+    //     return newBlock + 1;
+    // }
+    // else
+    // {
+    //     return newBlock;
+    // }
+    // }
+
+    uint32_t findBlock(uint32_t targetDoc, const vector<BlockMetadata> &metadata)
     {
-        // if curr block's lastDocId >= target, return start Block
-        // if first block to search has lastDocId that already exceeds target, means that target is somewhere in that block
-        if (metadata[blockNum].lastDocId >= targetDoc)
+        uint32_t nextBlock = blockNum;
+        while (nextBlock < metadata.size() && nextBlock <= finalBlock && metadata[nextBlock].lastDocId < targetDoc)
         {
-            return blockNum;
+            ++nextBlock;
         }
 
-        uint32_t skip = 1;
-        // exponential skip if valid and lastDocId < targetDoc
-        while ((blockNum + skip <= finalBlock) && (metadata[blockNum + skip].lastDocId < targetDoc))
+        if (nextBlock > finalBlock || nextBlock >= metadata.size())
         {
-            blockNum += skip;
-            skip <<= 1; // double the skips
+            return UINT32_MAX;
         }
 
-        // reduce skips if went over
-        skip >>= 1;
-        while (skip > 0)
-        {
-            if ((blockNum + skip <= finalBlock) && (metadata[blockNum + skip].lastDocId < targetDoc))
-            {
-                blockNum += skip;
-            }
-            skip >>= 1;
-        }
-
-        return (blockNum + 1 < finalBlock) ? blockNum + 1 : finalBlock;
+        return nextBlock;
     }
 
     string term;
@@ -210,7 +245,9 @@ private:
     uint32_t currentFreq;    // freq of term in currentDoc
     uint32_t blockNum;       // index of current COMPRESSED block in file (based on startBlock)
     uint32_t finalBlock;     // prevents galloping from bleeding into next term's postings
-
+    uint32_t startBlock;     // first block where term inverted list starts
+    uint32_t startIndex;     // first index offset within start block
+    uint32_t prevDocId;      // for delta decoding varbyte
     // buffers for curr block (compressed)
     vector<unsigned char> docBuffer;  // to store compressed bytes from disk, read metadata[blockNum].docSize bytes
     vector<unsigned char> freqBuffer; // to store compressed bytes from disk, read metadata[blockNum].freqSize bytes
@@ -222,7 +259,7 @@ private:
 };
 
 vector<uint64_t> computeBlockOffsets(const vector<BlockMetadata> &metadata);
-vector<uint32_t> conjunctiveDAAT(vector<string> &queryTerms,
+vector<ScoreDoc> conjunctiveDAAT(vector<string> &queryTerms,
                                  const unordered_map<string, size_t> &termToIndex,
                                  ifstream &ifs,
                                  const vector<LexiconEntry> &lexicon,
@@ -230,7 +267,7 @@ vector<uint32_t> conjunctiveDAAT(vector<string> &queryTerms,
                                  const vector<uint64_t> &blockOffsets,
                                  const vector<int> &pageTable,
                                  double averageDocLength);
-vector<uint32_t> disjunctiveDAAT(const vector<string> &queryTerms,
+vector<ScoreDoc> disjunctiveDAAT(const vector<string> &queryTerms,
                                  const unordered_map<string, size_t> &termToIndex,
                                  ifstream &ifs,
                                  const vector<LexiconEntry> &lexicon,
@@ -323,7 +360,7 @@ int main()
     vector<BlockMetadata> metadata = loadMetadata(metadataIfs);
     vector<uint64_t> blockOffsets = computeBlockOffsets(metadata);
 
-    vector<uint32_t> results;
+    vector<ScoreDoc> results;
     if (setting == "c")
     {
         bool allFound = true;
@@ -331,6 +368,7 @@ int main()
         {
             if (termToIndex.find(term) == termToIndex.end())
             {
+                cout << term << " not found in lexicon";
                 allFound = false;
                 break;
                 // if 1 term not found, no results
@@ -371,9 +409,9 @@ int main()
     }
 
     // prints result in reverse to go from highest to lowest score
-    for (int i = results.size(); i > 0; --i)
+    for (size_t i = results.size(); i > 0; --i)
     {
-        cout << results[i - 1] << endl;
+        cout << "Score: " << results[i - 1].score << ", DocID: " << results[i - 1].docId << endl;
     }
 }
 
@@ -392,7 +430,7 @@ vector<uint64_t> computeBlockOffsets(const vector<BlockMetadata> &metadata)
 }
 
 // conjunctive DAAT
-vector<uint32_t> conjunctiveDAAT(vector<string> &queryTerms,
+vector<ScoreDoc> conjunctiveDAAT(vector<string> &queryTerms,
                                  const unordered_map<string, size_t> &termToIndex,
                                  ifstream &ifs,
                                  const vector<LexiconEntry> &lexicon,
@@ -401,92 +439,105 @@ vector<uint32_t> conjunctiveDAAT(vector<string> &queryTerms,
                                  const vector<int> &pageTable,
                                  double averageDocLength)
 {
-    vector<ListPointer *> lp(queryTerms.size());
+    size_t numTerms = queryTerms.size();
+    vector<ListPointer *> lp(numTerms);
 
-    // sort terms based on length of inverted lists from shortest to longest
+    // sort terms based on length of inverted lists (shortest first)
     sort(queryTerms.begin(), queryTerms.end(), [&](const string &a, const string &b)
          { return lexicon[termToIndex.at(a)].listLength < lexicon[termToIndex.at(b)].listLength; });
 
     // open all lists
-    for (size_t i = 0; i < queryTerms.size(); ++i)
+    for (size_t i = 0; i < numTerms; ++i)
     {
-        ListPointer *p = new ListPointer(queryTerms[i], lexicon[termToIndex.at(queryTerms[i])]);
-        p->loadBlock(ifs, metadata, blockOffsets);
-        lp[i] = p;
+        lp[i] = new ListPointer(queryTerms[i], lexicon[termToIndex.at(queryTerms[i])]);
+        lp[i]->loadBlock(ifs, metadata, blockOffsets);
     }
 
-    // use min heap so we take out minimum out of the top k in constant time
+    // current docID in each list
+    vector<uint32_t> currDoc(numTerms);
+    for (size_t i = 0; i < numTerms; ++i)
+        currDoc[i] = lp[i]->nextGEQ(0, ifs, metadata, blockOffsets);
+
+    // min-heap for top-k
     priority_queue<ScoreDoc, vector<ScoreDoc>, MinHeapComp> topK;
 
-    uint32_t did = lp[0]->nextGEQ(0, ifs, metadata, blockOffsets);
-    while (did != UINT32_MAX)
+    while (true)
     {
-        double score = 0.0;
-        // checks for match in the other lists
-        size_t i;
-        for (i = 1; i < lp.size(); ++i)
+        // find candidate = max of current docIDs
+        uint32_t candidate = 0;
+        bool exhausted = false;
+        for (size_t i = 0; i < numTerms; ++i)
         {
-            uint32_t dnext = lp[i]->nextGEQ(did, ifs, metadata, blockOffsets);
-            if (dnext == UINT32_MAX)
+            if (currDoc[i] == UINT32_MAX)
             {
-                did = UINT32_MAX; // exhausted
+                exhausted = true;
                 break;
             }
-            if (dnext > did)
-            {
-                // mismatch, restart with next candidate from shortest list
-                did = lp[0]->nextGEQ(dnext, ifs, metadata, blockOffsets);
-                break;
-            }
+            candidate = max(candidate, currDoc[i]);
         }
-
-        if (did == UINT32_MAX)
-        {
+        if (exhausted)
             break;
-        }
 
-        if (i == lp.size()) // all terms are in doc did, push to top k heap
+        // advance all lists to candidate
+        bool allMatch = true;
+        for (size_t i = 0; i < numTerms; ++i)
         {
-            // since all matched, add up scores
-            for (size_t j = 0; j < lp.size(); ++j)
+            if (currDoc[i] < candidate)
             {
-                score += lp[j]->getScore(pageTable[did], averageDocLength);
+                currDoc[i] = lp[i]->nextGEQ(candidate, ifs, metadata, blockOffsets);
+                if (currDoc[i] == UINT32_MAX)
+                {
+                    exhausted = true;
+                    break;
+                }
             }
+            if (currDoc[i] != candidate)
+                allMatch = false;
+        }
+        if (exhausted)
+            break;
 
+        if (allMatch)
+        {
+            // compute score
+            double score = 0.0;
+            for (size_t i = 0; i < numTerms; ++i)
+                score += lp[i]->getScore(pageTable[candidate], averageDocLength);
+
+            // maintain top-k heap
             if (topK.size() < k)
             {
-                topK.push({score, did});
+                topK.push({score, candidate});
             }
-            // if heapsize >= k, pop out the min. if the incoming one is better score than the min
-            else if (score > topK.top().score || (score == topK.top().score && did > topK.top().docId))
+            else if (score > topK.top().score)
             {
                 topK.pop();
-                topK.push({score, did});
+                topK.push({score, candidate});
             }
 
-            // advance first list to next doc
-            did = lp[0]->nextGEQ(did + 1, ifs, metadata, blockOffsets);
+            // advance all lists past candidate
+            for (size_t i = 0; i < numTerms; ++i)
+                currDoc[i] = lp[i]->nextGEQ(candidate + 1, ifs, metadata, blockOffsets);
         }
     }
 
-    for (size_t idx = 0; idx < lp.size(); ++idx)
+    for (size_t i = 0; i < lp.size(); ++i)
     {
-        lp[idx]->close();
-        delete lp[idx];
+        lp[i]->close();
+        delete lp[i];
     }
 
-    vector<uint32_t> results;
+    vector<ScoreDoc> results;
     while (!topK.empty())
     {
-        results.push_back(topK.top().docId);
+        results.push_back(topK.top());
         topK.pop();
     }
 
-    // results ordered from lowest to highest score, so iterate in reverse when displaying later
-    return results;
+    return results; // ordered from lowest to highest score
 }
 
-vector<uint32_t> disjunctiveDAAT(const vector<string> &queryTerms,
+vector<ScoreDoc> disjunctiveDAAT(const vector<string> &queryTerms,
                                  const unordered_map<string, size_t> &termToIndex,
                                  ifstream &ifs,
                                  const vector<LexiconEntry> &lexicon,
@@ -586,7 +637,8 @@ vector<uint32_t> disjunctiveDAAT(const vector<string> &queryTerms,
         {
             topK.push({score, candidate});
         }
-        else if (score > topK.top().score || (score == topK.top().score && candidate > topK.top().docId))
+        // || (score == topK.top().score && candidate > topK.top().docId) - ignore
+        else if (score > topK.top().score)
         {
             topK.pop();
             topK.push({score, candidate});
@@ -599,10 +651,10 @@ vector<uint32_t> disjunctiveDAAT(const vector<string> &queryTerms,
         delete lp[idx];
     }
 
-    vector<uint32_t> results;
+    vector<ScoreDoc> results;
     while (!topK.empty())
     {
-        results.push_back(topK.top().docId);
+        results.push_back(topK.top());
         topK.pop();
     }
     return results;
