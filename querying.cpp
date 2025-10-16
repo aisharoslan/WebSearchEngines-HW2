@@ -180,64 +180,6 @@ private:
         return num;
     }
 
-    // galloping - if many blocks ahead have lastDocId < target, skip exponentially
-    // find block by block
-    // uint32_t gallopBlock(uint32_t targetDoc, const vector<BlockMetadata> &metadata)
-    // {
-
-    // // if curr block's lastDocId >= target, return start Block
-    // // if first block to search has lastDocId that already exceeds target, means that target is somewhere in that block
-    // if (metadata[blockNum].lastDocId >= targetDoc)
-    // {
-    //     return blockNum;
-    // }
-
-    // uint32_t skip = 1;
-    // uint32_t newBlock = blockNum;
-    // // exponential skip if valid and lastDocId < targetDoc
-    // while ((newBlock + skip <= finalBlock) && (metadata[newBlock + skip].lastDocId < targetDoc))
-    // {
-    //     newBlock += skip;
-    //     skip <<= 1; // double the skips
-    // }
-
-    // // reduce skips if went over
-    // skip >>= 1;
-    // while (skip > 0)
-    // {
-    //     if ((newBlock + skip <= finalBlock) && (metadata[newBlock + skip].lastDocId < targetDoc))
-    //     {
-    //         newBlock += skip;
-    //     }
-    //     skip >>= 1;
-    // }
-
-    // if (newBlock < finalBlock && metadata[newBlock].lastDocId < targetDoc)
-    // {
-    //     return newBlock + 1;
-    // }
-    // else
-    // {
-    //     return newBlock;
-    // }
-    // }
-
-    uint32_t findBlock(uint32_t targetDoc, const vector<BlockMetadata> &metadata)
-    {
-        uint32_t nextBlock = blockNum;
-        while (nextBlock < metadata.size() && nextBlock <= finalBlock && metadata[nextBlock].lastDocId < targetDoc)
-        {
-            ++nextBlock;
-        }
-
-        if (nextBlock > finalBlock || nextBlock >= metadata.size())
-        {
-            return UINT32_MAX;
-        }
-
-        return nextBlock;
-    }
-
     string term;
     uint32_t listLength;     // total postings for term
     uint32_t currentPos = 0; // curr index in postings list
@@ -283,6 +225,33 @@ vector<BlockMetadata> loadMetadata(ifstream &ifs);
 
 int main()
 {
+    string indexFilename = "compressed_inverted_index.bin";
+    string lexiconFilename = "lexicon.bin";
+    string metadataFilename = "metadata.bin";
+    string pageTableFilename = "page_table.bin";
+    ifstream indexIfs(indexFilename, ios::binary);
+    ifstream lexiconIfs(lexiconFilename, ios::binary);
+    ifstream metadataIfs(metadataFilename, ios::binary);
+    ifstream pageTableIfs(pageTableFilename, ios::binary);
+
+    if (!indexIfs || !lexiconIfs || !metadataIfs || !pageTableIfs)
+    {
+        cerr << "Failed to open files!" << endl;
+        return 1;
+    }
+
+    // put page table in memory
+    vector<int> pageTable = loadPageTable(pageTableIfs);
+    double averageDocLength = getAverageDocLength(pageTable);
+
+    // put lexicon in memory and have mapping from term to index
+    unordered_map<string, size_t> termToIndex;
+    vector<LexiconEntry> lexicon = loadLexicon(lexiconIfs, termToIndex);
+
+    // process metadata in memory
+    vector<BlockMetadata> metadata = loadMetadata(metadataIfs);
+    vector<uint64_t> blockOffsets = computeBlockOffsets(metadata);
+
     string setting;
     cout << "Conjunctive or Disjunctive (c/d): " << endl;
     cin >> setting;
@@ -332,33 +301,6 @@ int main()
 
     using namespace std::chrono;
     auto startTime = high_resolution_clock::now();
-
-    string indexFilename = "compressed_inverted_index.bin";
-    string lexiconFilename = "lexicon.bin";
-    string metadataFilename = "metadata.bin";
-    string pageTableFilename = "page_table.bin";
-    ifstream indexIfs(indexFilename, ios::binary);
-    ifstream lexiconIfs(lexiconFilename, ios::binary);
-    ifstream metadataIfs(metadataFilename, ios::binary);
-    ifstream pageTableIfs(pageTableFilename, ios::binary);
-
-    if (!indexIfs || !lexiconIfs || !metadataIfs || !pageTableIfs)
-    {
-        cerr << "Failed to open files!" << endl;
-        return 1;
-    }
-
-    // put page table in memory
-    vector<int> pageTable = loadPageTable(pageTableIfs);
-    double averageDocLength = getAverageDocLength(pageTable);
-
-    // put lexicon in memory and have mapping from term to index
-    unordered_map<string, size_t> termToIndex;
-    vector<LexiconEntry> lexicon = loadLexicon(lexiconIfs, termToIndex);
-
-    // process metadata in memory
-    vector<BlockMetadata> metadata = loadMetadata(metadataIfs);
-    vector<uint64_t> blockOffsets = computeBlockOffsets(metadata);
 
     vector<ScoreDoc> results;
     if (setting == "c")

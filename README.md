@@ -62,8 +62,11 @@
 
 ### 4) query.cpp 
 - runtime:
-    - for conjunctive on "tinting" and "eyebrow" -> 1653 ms
-    - for disjunctive on "difference", "painting", and "dry" -> 2113 ms
+    - for conjunctive on "tinting" and "eyebrow" -> 2 ms
+    - for disjunctive on "archie", "moore", "bash", "ali" -> 5 ms
+        - note: for my disjunctive queries, most times they take 20-80ms
+        - e.g. "cats", "college", "life" - 69ms
+        - e.g. "best", "friend", "forever" - 73 ms
 - inputs:
     - page table ("page_table.bin")
     - lexicon ("lexicon.bin")
